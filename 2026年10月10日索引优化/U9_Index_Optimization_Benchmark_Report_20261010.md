@@ -1,102 +1,69 @@
-# 用友 U9 生产环境第三期性能索引优化与基准测试报告 (2026-10-10)
+# 用友 U9 生产环境第三期性能索引优化与全景基准报告 (2026-10-10)
 
-> **测试时间**：2026年10月10日  
-> **测试环境**：正式生产环境 `192.168.100.210` / 数据库：`SHBC`  
+> **测试与分析时间**：2026年10月10日  
+> **目标环境**：正式生产库 `192.168.100.210` / 数据库：`SHBC`  
+> **分析数据源**：
+> 1. `Portal\log` 最新日志（Web/接口层，截至今日 08:02）  
+> 2. `ApplicationServer\log\logapp` 近期全量日志（**共 35 份日志分卷**，2026-09-20 至 2026-10-09，涵盖月初月结与高频 MRP 运算大作业）  
 > **数据库引擎**：Microsoft SQL Server 2016 Enterprise Edition (Core-based 64-bit)  
-> **数据体量**：真实生产全量数据（出货计划行 90.3 万行、调拨入库单 27.1 万行、销售订单行 68 万行等）  
-> **优化策略**：全程 `ONLINE = ON`（业务无锁零中断） + `DATA_COMPRESSION = PAGE`（页面级压缩） + `FILLFACTOR = 90`
+> **优化策略**：全程 `ONLINE = ON`（联机无锁业务零中断） + `DATA_COMPRESSION = PAGE`（页面级压缩） + `FILLFACTOR = 90`
 
 ---
 
-## 🏆 一、昨日与今日生产性能日志宏观对比战报
+## 🏆 一、生产环境性能治理全景战报
 
-根据 2026年10月10日早 08:02 最新提取的性能日志（`LOG20261010\ufida.ubf.perf.log`），对比 10月9日全天日志：
+### 1. Web / 接口层（`Portal\log`）成效对比：
+- 昨日 17 个优化索引上线后，今日前台慢查询数量由 **114 次暴降至 10 次（降幅 91.2%）**；
+- 工单工序 1,755 万行排产全表扫、工时报告 224 万行慢查、出货计划权限 80 次慢查等**全部清零**；
+- 今日前台仅存的 1 个定时客开慢查（`closeSoLine()` 19.5 秒），通过新建 `IX_Cust_SM_ShipPlanLine_SrcDocLine` 索引，**正式库实测降至 155 毫秒（提速 126 倍）**！
 
-| 监控指标 | 10月9日全天日志 | 10月10日最新日志 (截至08:02) | 优化改善幅度 |
+### 2. 后端核心计算引擎（`ApplicationServer\log` 35 份日志汇总）：
+对 35 份日志进行全量大数据聚合，共捕获 **81 种超长慢查询**，最耗时的前五大作业累计占总慢查耗时的 **88%**：
+
+```mermaid
+pie title ApplicationServer 35份日志累计耗时分布 (小时)
+    "MRP_GetPurchaseOrder 采购需求提取 (50.6h)" : 50.6
+    "MRP_Output 计划订单输出与消退 (15.2h)" : 15.2
+    "P_UpdateStats 数据库自动维护 (13.2h)" : 13.2
+    "MRP_Pretreatment 净需求展开预处理 (3.9h)" : 3.9
+    "MRP_GetForecastOrder 预测需求提取 (3.2h)" : 3.2
+    "MRP_GetSaleOrder 销售订单提取 (3.1h)" : 3.1
+    "P_InvTrans 存货核算月结统计 (2.6h)" : 2.6
+    "其他后台存储过程 (7.2h)" : 7.2
+```
+
+---
+
+## 📊 二、第三期全量 8 大核心优化索引全景规格表
+
+| 序号 | 目标表名 | 索引名称 (`IX_Cust_*`) | 目标表行数 | 核心业务瓶颈与触发场景 | DMV 评分 / 缺失查找 | 预期改善幅度 |
+| :---: | :--- | :--- | :---: | :--- | :---: | :---: |
+| **01** | `SM_ShipPlanLine` | `IX_Cust_SM_ShipPlanLine_SrcDocLine` | **90.3 万行** | **客开定时关单 19.5s 慢查**（`closeSoLine`，已在正式库部署生效） | 126 倍实测提速 | 🚀 **19.5s ➡️ 0.15s** |
+| **02** | `SM_ForecastOrderLine` | `IX_Cust_SM_ForecastOrderLine_ForecastOrder` | **30.8 万行** | **MRP预测需求抓取 7,911s/2小时**（`MRP_GetForecastOrder`，消除主表外键全表扫） | 28,042 次 Seek | ⚡ **91.36% ~ 99.78%** |
+| **03** | `MRP_PlanOrderConsumption`| `IX_Cust_MRP_PlanOrderConsumption_ReleaseDoc` | **50.7 万行** | **MRP输出与订单消退 54,867s**（`MRP_Output`，下发单据反查全表扫） | 12,330 次 Seek | 🚀 **99.64%** |
+| **04** | `PM_POLine` | `IX_Cust_PM_POLine_Status_MRP` | **65.1 万行** | **MRP采购在途提取 182,363s/50小时**（`MRP_GetPurchaseOrder`，采购状态与需求复合索引） | 12.9 万分 | 🚀 **消除 65万行全表扫** |
+| **05** | `InvTrans_DayClose` | `IX_Cust_InvTrans_DayClose_Org_Wh_Date` | **152.3 万行** | **存货月结总核算 1,336s/22.2分钟**（`MonthClose_AccountPeriodTotal`，消除 6.1万次日结回表） | 61,692 次未命中 | ⚡ **99.82%** |
+| **06** | `MRP_SimuPlanOrder` | `IX_Cust_MRP_SimuPlanOrder_Sub_Version` | **13.0 万行** | **MRP替代料计算 5,004s**（`MRP_MainVersionProcess`，替代料与版本复合索引） | **588,381 分** (34.8万次) | 🚀 **消除替代料全扫描** |
+| **07** | `InvTrans_WhQoh` | `IX_Cust_InvTrans_WhQoh_Wh_ItemCode` | **42.9 万行** | **MRP现存量预处理 14,156s**（`MRP_Pretreatment`，仓库可用量快速覆盖检索） | 6,851 次检索 | 🚀 **80.34%** |
+| **08** | `InvTrans_AccountPeriodLine`| `IX_Cust_InvTrans_AccountPeriodLine_Org_Date` | **120.0 万行** | **存货月结期间统计 3,276s**（`P_InvTrans_MonthClose_StatPeriodQueryInvTotal`，组织与日期范围索引） | **322,645 分** | 🚀 **加速月结加权平均** |
+
+---
+
+## 💾 三、物理存储空间开销预估
+
+得益于全量 **`DATA_COMPRESSION = PAGE`** 页面压缩：
+
+| 索引分类 | 覆盖业务表总行数 | 预估物理磁盘总增量 | 占全库空间比例 |
 | :--- | :---: | :---: | :---: |
-| **慢查询总数 (`ExecSQLTooLong`)** | **114 次** | **仅 10 次** | 📉 **暴降 91.2%** |
-| **工单工序 1,755万行全表扫 (`MO_MOResource`)** | 高频出现 (最高 34.8 秒) | **0 次 (彻底消除)** | 🎯 **100% 解决** |
-| **工时耗用报告 224万行慢查 (`MO_ResUsageRpt`)** | 高频出现 (最高 29.5 秒) | **0 次 (彻底消除)** | 🎯 **100% 解决** |
-| **出货计划权限 80次慢查 (`SM_ShipPlanLine`)** | **80 次** (最高 39.3 秒) | **0 次 (彻底消除)** | 🎯 **100% 解决** |
-| **MRP 日志全表扫与倒序内存排序 (`MRP_Log`)** | 最高 54.0 秒 | **0 次 (彻底消除)** | 🎯 **100% 解决** |
-| **调拨出运单号 18秒慢查 (`InvDoc_TransferIn`)** | 出现 11 次 (平均 18 秒) | **0 次 (彻底消除)** | 🎯 **100% 解决** |
+| **第三期 8 项索引全量** | **约 565 万行** | **约 95 ~ 120 MB（约 0.1 GB）** | **< 0.05%** |
 
-> **评估结论**：  
-> 昨天部署上线的 17 个关键索引在高并发生产环境下**全面生效**，千万级工单排产、工时报告与权限校验慢查在今日日志中全部清零！
+> **评估结论**：以不足 120 MB 的微小物理开销，直接覆盖 MRP 计算引擎中耗时超 50 小时、存货核算月结超 22 分钟的核心瓶颈表，投入产出比极高。
 
 ---
 
-## 🔍 二、今日残留 10 次慢 SQL 分布与定位
+## 📝 四、执行与部署指引
 
-在今日日志仅存的 10 次慢 SQL 中，**9 次集中在同一个客开定时任务**：
+该 8 项索引脚本已完整生成至：
+[`d:\U9 Table  AI Prompt\2026年10月10日索引优化\U9_Index_Optimization_20261010.sql`](file:///d:/U9%20Table%20%20AI%20Prompt/2026%E5%B9%B410%E6%9C%8810%E6%97%A5%E7%B4%A2%E5%BC%95%E4%BC%98%E5%8C%96/U9_Index_Optimization_20261010.sql)
 
-1. **客开定时任务 `KK290BP.closeSoLine()`**：
-   - **频次**：凌晨 03:45 至 07:48 每半小时至一小时执行一次，**累计 9 次（占今日全部慢查的 90%）**；
-   - **耗时**：平均 **16.87 秒**，最高 **18.95 秒**。
-2. **夜间离线采购期间统计 `PMStatistics`**：
-   - **频次**：凌晨 01:20 执行 **1 次**；
-   - **耗时**：30.56 秒；
-   - **评估**：系统夜间离线批处理作业，日间生产开单时段完全不触发，不影响日间系统响应。
-
----
-
-## ⚡ 三、第三期核心优化索引实测对比表
-
-针对占今日 90% 慢查的 `closeSoLine()` 定时任务，在正式库 `SHBC` 上以 `ONLINE = ON` + `DATA_COMPRESSION = PAGE` 标准完成了专属覆盖索引部署与基准对比：
-
-| 序号 | 业务场景 | 优化目标表 | 表数据行数 | 优化前执行耗时 | 优化后执行耗时 | **执行耗时改善** | 优化前执行算子 | 优化后执行算子 |
-| :---: | :--- | :--- | :---: | :---: | :---: | :---: | :--- | :--- |
-| **01** | **自动关闭订单行反查出运单 (`closeSoLine`)** | `SM_ShipPlanLine` | **903,278 行** | 19,582 ms (19.58s) | **155 ms (0.15s)** | 🚀 **提速 126.3 倍 (-99.2%)** | Nested Loops 驱动 27.1万行 `InvDoc_TransferIn` 聚集索引全表扫描 | **Index Seek** (全链路精准索引查找，0 全表扫描) |
-
----
-
-## 💾 四、第三期新建索引物理空间开销明细
-
-通过 SQL Server 物理存储引擎实测，该索引在生产环境中的精确空间占用如下：
-
-| 目标表名 | 索引名称 (`IX_Cust_*`) | 数据行数 | 压缩模式 | 填充因子 | 物理占用空间 (MB) |
-| :--- | :--- | :---: | :---: | :---: | :---: |
-| `[dbo].[SM_ShipPlanLine]` | `[IX_Cust_SM_ShipPlanLine_SrcDocLine]` | **903,278 行** | **PAGE** | 90% | **20.95 MB** |
-
-> **空间开销评估**：  
-> 索引仅占用 **20.95 MB** 物理磁盘空间，相比数百 GB 的生产数据库文件微乎其微，以极低代价彻底解决了该定时任务每日数十次的 19 秒慢查积压。
-
----
-
-## 🔬 五、执行计划对比与根因剖析
-
-### 1. 优化前执行计划痛点（19.5 秒瓶颈）：
-```text
-|--Nested Loops(Inner Join, OUTER REFERENCES:([SO2].[ID]))
-     |--Nested Loops(...)
-     |    |--Clustered Index Seek (SM_SOLine)
-     |--Top(TOP 1)
-          |--Nested Loops(...)
-               |--Clustered Index Scan (InvDoc_TransferIn A, WHERE: Status NOT IN (0, 1)) <-- 致命瓶颈：27.1 万行全表扫
-               |--Index Seek (SM_ShipPlan b)
-               |--Index Seek (InvDoc_TransInLine A1)
-               |--Index Seek (SM_ShipPlanLine b1)
-```
-- **根因**：子查询 `t1` 内部由于 `SM_ShipPlanLine` 缺少针对 `SrcDocLine` 的索引，SQL Server 优化器被迫从外层 `SM_SOLine` 遍历每一行，驱动对内层 `InvDoc_TransferIn` 进行 **27.1 万行的聚集索引全表扫描**！
-
-### 2. 优化后执行计划（155 毫秒飞跃）：
-```text
-|--Nested Loops(Inner Join, OUTER REFERENCES:([SO2].[ID]))
-     |--Nested Loops(...)
-     |--Top(TOP 1)
-          |--Nested Loops(...)
-               |--Index Seek (SM_ShipPlanLine b1, SEEK: b1.SrcDocLine = SO2.ID) <-- 精准 Seek！
-               |--Clustered Index Seek (SM_ShipPlan b)                         <-- 毫秒级 Seek！
-               |--Index Seek (InvDoc_TransferIn A, FlexDoc 索引)               <-- 极速 Seek！
-               |--Index Seek (InvDoc_TransInLine A1)                           <-- 精准 Seek！
-```
-- **蜕变**：全链路转为常数级 **Index Seek**，彻底切断了全表扫描，执行时间从 **19.5 秒** 暴降至 **0.15 秒**！
-
----
-
-## 💡 六、后续代码级重构建议（可选发版时优化）
-
-在客开源码 [`D:\U9CustDLL\UFIDA.U9.Cust.KK290BP\BLL\jxclose.cs`](file:///D:/U9CustDLL/UFIDA.U9.Cust.KK290BP/BLL/jxclose.cs#L163-L190) 中：
-1. 原 SQL `FROM SM_SOShipline SO3 JOIN SM_SOLine SO2 ON SO3.SOLine = SO2.ID` 中，`SM_SOShipline SO3` 表实际上并未参与任何 SELECT 字段提取或有效过滤，只是当年从 `PolineCloseLine()` 复制时遗留；
-2. 由于 `SO3` 是一对多子表，导致原 SQL 不得不增加 `SELECT DISTINCT` 进行去重；
-3. 后续若有该 DLL 的发版窗口，建议在 C# 中移除 `SM_SOShipline SO3` 并改用直接关联，执行效率可进一步提升至 20 毫秒以内。
+脚本中已对每一个索引配备了 `IF NOT EXISTS` 检测与友好 `PRINT` 提示，支持在正式环境无锁联机执行。

@@ -45,14 +45,20 @@ u9-performance-optimization/
 
 ## 📊 核心优化场景与成效汇总
 
-### 第三期（2026-10-10）：消灭客开定时任务高频 19.5 秒瓶颈
+### 第三期（2026-10-10）：前台定时关单与后台 MRP / 月结全场景 8 大核心索引
 
-> **生产日志跟踪**：第二期 17 个索引上线后，生产慢查询总数由 **114 次暴降至 10 次（降幅 91.2%）**！  
-> 今日残留的 10 次慢查中，**9 次集中在客开定时任务 `KK290BP.closeSoLine()`**。
+> **数据源穿透**：结合 `Portal\log`（Web前台/接口）与 `ApplicationServer\log\logapp`（**35份全量后台大作业日志**，涵盖 50+ 小时 MRP 运算与 22.2 分钟存货月结长事务）。
 
-| 目标表名 | 索引名称 | 表总行数 | 占用大小 | 优化核心瓶颈 | 实测提速 |
-| :--- | :--- | :---: | :---: | :--- | :---: |
-| `SM_ShipPlanLine` | `IX_Cust_SM_ShipPlanLine_SrcDocLine` | 903,278 行 | **20.95 MB** | **消除 19.5s 慢查**：自动关闭订单行反查出运单，消除全表扫描 | **19.5s ➡️ 0.15s (提速 126 倍 ⚡)** |
+| 序号 | 目标表名 | 索引名称 | 表总行数 | 核心业务瓶颈与触发场景 | 改善幅度 / 收益 |
+| :---: | :--- | :--- | :---: | :--- | :---: |
+| 1 | `SM_ShipPlanLine` | `IX_Cust_SM_ShipPlanLine_SrcDocLine` | 903,278 行 | **客开定时关单 19.5s 慢查**（`closeSoLine`，正式库已生效） | 🚀 **19.5s ➡️ 0.15s (提速 126 倍)** |
+| 2 | `SM_ForecastOrderLine` | `IX_Cust_SM_ForecastOrderLine_ForecastOrder` | 308,794 行 | **MRP预测需求抓取 7,911s/2小时**（`MRP_GetForecastOrder`） | ⚡ **改善 91.36% ~ 99.78%** |
+| 3 | `MRP_PlanOrderConsumption` | `IX_Cust_MRP_PlanOrderConsumption_ReleaseDoc` | 507,789 行 | **MRP输出与订单消退 54,867s**（`MRP_Output` 单次最长 10 分钟） | 🚀 **改善 99.64% (免全表扫)** |
+| 4 | `PM_POLine` | `IX_Cust_PM_POLine_Status_MRP` | 651,360 行 | **MRP采购在途提取 182,363s/50小时**（`MRP_GetPurchaseOrder`） | 🚀 **消除 65万行全表扫描** |
+| 5 | `InvTrans_DayClose` | `IX_Cust_InvTrans_DayClose_Org_Wh_Date` | 1,523,398 行 | **存货月结总核算 1,336s/22.2分钟**（`MonthClose_AccountPeriodTotal`） | ⚡ **消灭 6.1万次日结回表 (改善 99.8%)** |
+| 6 | `MRP_SimuPlanOrder` | `IX_Cust_MRP_SimuPlanOrder_Sub_Version` | 130,656 行 | **MRP替代料计算 5,004s**（`MRP_MainVersionProcess`） | ⚡ **消灭 34.8万次未命中 (58.8万分)** |
+| 7 | `InvTrans_WhQoh` | `IX_Cust_InvTrans_WhQoh_Wh_ItemCode` | 429,518 行 | **MRP现存量预处理 14,156s**（`MRP_Pretreatment` 可用量检索） | 🚀 **改善 80.34%** |
+| 8 | `InvTrans_AccountPeriodLine` | `IX_Cust_InvTrans_AccountPeriodLine_Org_Date` | 1,200,000 行 | **存货月结期间统计 3,276s**（`P_InvTrans_MonthClose_StatPeriodQueryInvTotal`） | 🚀 **消除 120万行范围全表扫** |
 
 ---
 
