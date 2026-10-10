@@ -32,15 +32,29 @@ u9-performance-optimization/
 ├── 2026年10月8日索引优化/
 │   ├── U9_Index_Optimization_20261008.sql                  # 第一期 10 个核心索引完整执行脚本
 │   └── U9_Index_Optimization_Benchmark_Report_20261008.md   # 第一期基准测试报告（执行耗时与逻辑读对比）
-└── 2026年10月9日索引优化/
-    ├── U9_Index_Optimization_20261009.sql                  # 第二期 17 个全量核心优化索引脚本
-    ├── U9_Index_Optimization_Benchmark_Report_20261009.md   # 第二期 Part 1 基准报告（前 10 个索引）
-    └── U9_Index_Optimization_Part2_Benchmark_Report.md     # 第二期 Part 2 基准报告（新增 7 个索引）
+├── 2026年10月9日索引优化/
+│   ├── U9_Index_Optimization_20261009.sql                  # 第二期 17 个全量核心优化索引脚本（正式库已部署）
+│   ├── U9_Index_Optimization_Benchmark_Report_20261009.md   # 第二期 Part 1 基准报告（前 10 个索引）
+│   └── U9_Index_Optimization_Part2_Benchmark_Report.md     # 第二期 Part 2 基准报告（新增 7 个索引）
+└── 2026年10月10日索引优化/
+    ├── U9_Index_Optimization_20261010.sql                  # 第三期 索引优化脚本（解决客开 19.5s 慢查）
+    └── U9_Index_Optimization_Benchmark_Report_20261010.md  # 第三期 性能对比与基准实测报告（提速 126 倍）
 ```
 
 ---
 
 ## 📊 核心优化场景与成效汇总
+
+### 第三期（2026-10-10）：消灭客开定时任务高频 19.5 秒瓶颈
+
+> **生产日志跟踪**：第二期 17 个索引上线后，生产慢查询总数由 **114 次暴降至 10 次（降幅 91.2%）**！  
+> 今日残留的 10 次慢查中，**9 次集中在客开定时任务 `KK290BP.closeSoLine()`**。
+
+| 目标表名 | 索引名称 | 表总行数 | 占用大小 | 优化核心瓶颈 | 实测提速 |
+| :--- | :--- | :---: | :---: | :--- | :---: |
+| `SM_ShipPlanLine` | `IX_Cust_SM_ShipPlanLine_SrcDocLine` | 903,278 行 | **20.95 MB** | **消除 19.5s 慢查**：自动关闭订单行反查出运单，消除全表扫描 | **19.5s ➡️ 0.15s (提速 126 倍 ⚡)** |
+
+---
 
 ### 第二期（2026-10-09）：17 个全量索引正式环境部署统计
 
@@ -72,6 +86,9 @@ u9-performance-optimization/
 
 实测基于 SQL Server `SET STATISTICS TIME, IO ON` 基准测试：
 
+- **客开定时关闭销售订单行 (`closeSoLine`)**：
+  - 优化前：耗时 **19,582 ms (19.58 秒)**，驱动 27.1 万行调拨单聚集索引全表扫描；
+  - 优化后：耗时 **155 ms (0.15 秒)**（**提速 126 倍 ⚡**），全链路转为精准 Index Seek！
 - **工序资源点查 (`MO_MOResource`)**：
   - 优化前：耗时 252.7 ms，逻辑读 227,624 页（约 1.74 GB 内存读取，全表扫描）；
   - 优化后：耗时 **28.7 ms**（**提速 8.8 倍**），逻辑读 **3 页**（**削减 99.999%**，精准 Index Seek）。
@@ -80,7 +97,7 @@ u9-performance-optimization/
   - 优化后：耗时 **4.0 ms**（**提速 18.2 倍**），逻辑读 **7 页**（**削减 99.94%**）。
 - **出货计划行级权限查询 (`SM_ShipPlanLine`)**：
   - 优化前：高并发下平均 15~39 秒，产生大量读锁；
-  - 优化后：毫秒级返回，彻底消除今日生产出现的 80 次超时慢查。
+  - 优化后：毫秒级返回，彻底消除生产出现的 80 次超时慢查。
 
 ---
 
@@ -89,8 +106,8 @@ u9-performance-optimization/
 直接在 SQL Server Management Studio (SSMS) 中连接目标 U9 数据库（如生产库或测试库），打开并执行对应的 SQL 脚本即可：
 
 ```sql
--- 推荐按期执行第二期全量脚本（包含 IF NOT EXISTS 幂等检查）
-:r "2026年10月9日索引优化/U9_Index_Optimization_20261009.sql"
+-- 推荐按期执行最新全量脚本（包含 IF NOT EXISTS 幂等检查）
+:r "2026年10月10日索引优化/U9_Index_Optimization_20261010.sql"
 ```
 
 脚本内均包含幂等性校验，已存在的索引会自动跳过，安全无副作用。
